@@ -1,0 +1,1 @@
+ffmpeg -framerate 30 -i outputFrames/%%020d.jpg -i input.mp4 -c:v h264_qsv -pix_fmt yuv420p -c:a copy output.mp4
