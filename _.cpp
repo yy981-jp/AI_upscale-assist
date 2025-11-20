@@ -49,11 +49,7 @@ void upscale(std::stop_token st) {
 	size_t indexReqSize = indexReq.size();
 	#pragma omp parallel for
 	for (; pos < indexReqSize; ++pos) {
-		std::cout << std::to_string(pos+1) << "/" << std::to_string(indexReqSize);
-		if (fs::exists("output/"+std::to_string(indexReq[pos])+".jpg")) { //処理済みが存在する場合
-			std::cout << "    skip\n";
-			continue;
-		} else std::cout << "\n";
+		std::cout << std::to_string(pos+1) << "/" << std::to_string(indexReqSize) << "\n";
 		int result = cmd("py -3.13 upscale.py " + std::to_string(indexReq[pos]) + ".jpg");
 		if (result != 0) {
 			std::cerr << "\nupscale.py - [ERROR]: " << std::to_string(pos+1) << "(index=" << std::to_string(pos) << "\n\n";
@@ -83,19 +79,6 @@ void upscale_man() {
 	}
 }
 
-void ___() {
-	uint32_t h_t;
-	std::vector<uint32_t> index;
-	std::ifstream ifsIndex("progress/index.bin", std::ios::binary);
-	while (ifsIndex.read(reinterpret_cast<char*>(&h_t), sizeof(h_t))) index.push_back(h_t);
-	
-	for (int i = 0; i < index.size(); ++i) {
-		fs::create_hard_link("output/"+std::to_string(index[i])+".jpg", "outputFrames/"+ std::format("{:020}",i+1) +".jpg");
-	}
-}
-
-
-
 void checkHash() {
 	std::cout << "本当に初期化しますか? [y,n,s(frame生成+input削除無し)]: ";
 	bool skipGenFrame = false;
@@ -111,7 +94,7 @@ void checkHash() {
 	}
 	
 	const std::vector<std::string> refreshDirs {
-		"input", "inputFrames", "output", "outputFrames", "progress"
+		"input", "output", "outputFrames", "progress"
 	};
 	if (!skipGenFrame) for (const std::string d: refreshDirs) {
 		fs::remove_all(d);
@@ -126,7 +109,7 @@ void checkHash() {
 	std::unordered_set<uint32_t> indexReq;
 	std::vector<uint32_t> index;
 
-	for (auto& e : fs::directory_iterator("inputFrames")) {
+	for (auto& e : fs::directory_iterator("input")) {
 		std::ifstream ifs(e.path(), std::ios::binary);
 		std::fill(buffer.begin(), buffer.end(), 0);
 
@@ -139,7 +122,7 @@ void checkHash() {
 			fs::remove(e.path());
 		} else {
 			// 新しいCRC → ファイル名を書き換え
-			auto newPath = fs::path("input") / (std::to_string(h) + e.path().extension().string());
+			auto newPath = e.path().parent_path() / (std::to_string(h) + e.path().extension().string());
 			for (int attempt = 0; attempt < 3; ++attempt) {
 				try {
 					fs::rename(e.path(), newPath);
