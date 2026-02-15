@@ -4,34 +4,41 @@ import cv2
 from tqdm import tqdm
 
 
-def core(compiled_model, frame):
-	# 前処理（HWC uint8前提）
-	input_tensor = frame.transpose(2,0,1)[None, ...]
-	input_tensor = np.ascontiguousarray(input_tensor, dtype=np.float32)
-	input_tensor *= (1.0 / 255.0)
+def core_batch(compiled_model, frames):
+	# frames: list of HWC uint8
 
-	# 推論
-	result = compiled_model({0: input_tensor})
-	output = result[compiled_model.output(0)]
+	# ===== 前処理 =====
+	arr = np.stack(frames, axis=0)          # [B,H,W,C]
+	arr = arr.transpose(0,3,1,2)            # [B,C,H,W]
+	arr = np.ascontiguousarray(arr, dtype=np.float32)
+	arr *= (1.0 / 255.0)
 
-	# 後処理
-	output = output[0]                    # squeeze
+	# ===== 推論 =====
+	result = compiled_model({0: arr})
+	output = result[compiled_model.output(0)]  # [B,3,H*,W*]
+
+	# ===== 後処理 =====
 	output = np.clip(output, 0, 1)
 	output *= 255.0
 	output = output.astype(np.uint8)
-	output = output.transpose(1,2,0)      # HWC
 
-	return output
+	# CHW → HWC
+	output = output.transpose(0,2,3,1)
+
+	return output  # shape: [B,H,W,C]
 
 
 # モデル読み込み
 ie = Core()
-model = ie.read_model(model="models/realesrgan_x4plus_dynamic.xml")
+model = ie.read_model(model="models/realesrgan_x4plus_dynamic_batch.xml")
 compiled_model = ie.compile_model(
 	model,
 	"GPU",
 	config={"INFERENCE_PRECISION_HINT": "f16"}
 )
+
+print(model.input(0).partial_shape)
+exit
 
 # 入力動画
 input_path = "input.mp4"
@@ -56,19 +63,33 @@ out = cv2.VideoWriter(output_path, fourcc, fps, (out_width, out_height))
 
 total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
 
+BATCH = 4
+frame_buffer = []
+
 with tqdm(total=total_frames) as pbar:
 	while True:
 		ret, frame = cap.read()
 		if not ret:
 			break
 
-		# ===== 推論 =====
-		output_frame = core(compiled_model, frame)
-		# =================
+		frame_buffer.append(frame)
 
-		out.write(output_frame)
+		if len(frame_buffer) == BATCH:
+			output_batch = core_batch(compiled_model, frame_buffer)
 
-		pbar.update(1)
+			for out_frame in output_batch:
+				out.write(out_frame)
+				pbar.update(1)
+
+			frame_buffer.clear()
+
+	# 余り処理
+	if len(frame_buffer) > 0:
+		output_batch = core_batch(compiled_model, frame_buffer)
+
+		for out_frame in output_batch:
+			out.write(out_frame)
+			pbar.update(1)
 
 cap.release()
 out.release()
