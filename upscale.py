@@ -30,10 +30,10 @@ def core_batch(compiled_model, frames):
 
 # モデル読み込み
 ie = Core()
-model = ie.read_model(model="models/realesrgan_x4plus_dynamic_batch.xml")
+model = ie.read_model(model="models/realesrgan_384.xml")
 compiled_model = ie.compile_model(
 	model,
-	"GPU",
+	"NPU",
 	config={"INFERENCE_PRECISION_HINT": "f16"}
 )
 
@@ -63,7 +63,7 @@ out = cv2.VideoWriter(output_path, fourcc, fps, (out_width, out_height))
 
 total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
 
-BATCH = 4
+BATCH = 1
 frame_buffer = []
 
 with tqdm(total=total_frames) as pbar:
@@ -72,7 +72,7 @@ with tqdm(total=total_frames) as pbar:
 		if not ret:
 			break
 
-		frame_buffer.append(frame)
+		frame_buffer.append(cv2.resize(frame, (384, 384))) # 384に強制
 
 		if len(frame_buffer) == BATCH:
 			output_batch = core_batch(compiled_model, frame_buffer)
