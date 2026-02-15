@@ -1,29 +1,74 @@
 from openvino import Core
 import numpy as np
 import cv2
-import sys
+from tqdm import tqdm
+
+
+def core(compiled_model, frame):
+	# 前処理（HWC uint8前提）
+	input_tensor = frame.transpose(2,0,1)[None, ...]
+	input_tensor = np.ascontiguousarray(input_tensor, dtype=np.float32)
+	input_tensor *= (1.0 / 255.0)
+
+	# 推論
+	result = compiled_model({0: input_tensor})
+	output = result[compiled_model.output(0)]
+
+	# 後処理
+	output = output[0]                    # squeeze
+	output = np.clip(output, 0, 1)
+	output *= 255.0
+	output = output.astype(np.uint8)
+	output = output.transpose(1,2,0)      # HWC
+
+	return output
+
 
 # モデル読み込み
 ie = Core()
-model = ie.read_model(model="models/realesrgan_x4plus.xml")
-compiled_model = ie.compile_model(model=model, device_name="GPU")  # NPU, GPU, CPU自動選択
+model = ie.read_model(model="models/realesrgan_x4plus_dynamic.xml")
+compiled_model = ie.compile_model(
+	model,
+	"GPU",
+	config={"INFERENCE_PRECISION_HINT": "f16"}
+)
 
-# 入力画像
-img = cv2.imread("input/"+sys.argv[1]).astype(np.float32) / 255.0
-img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+# 入力動画
+input_path = "input.mp4"
+output_path = "output.mp4"
 
-# サイズ調整（[N,C,H,W]）
-input_tensor = np.expand_dims(np.transpose(img, (2, 0, 1)), axis=0)
+cap = cv2.VideoCapture(input_path)
 
-# 推論
-output_tensor = compiled_model([input_tensor])[0]
+if not cap.isOpened():
+	raise RuntimeError("動画を開けない")
 
-# 出力を画像形式に変換
-output_img = np.squeeze(output_tensor)
-output_img = np.clip(output_img, 0, 1)
-output_img = (output_img * 255).astype(np.uint8)
-output_img = np.transpose(output_img, (1, 2, 0))  # CHW→HWC
-output_img = cv2.cvtColor(output_img, cv2.COLOR_RGB2BGR)
+fps = cap.get(cv2.CAP_PROP_FPS)
+width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
 
-# 保存
-cv2.imwrite("output/"+sys.argv[1], output_img)
+# x4モデル前提
+scale = 4
+out_width = width * scale
+out_height = height * scale
+
+fourcc = cv2.VideoWriter_fourcc(*"mp4v")
+out = cv2.VideoWriter(output_path, fourcc, fps, (out_width, out_height))
+
+total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+
+with tqdm(total=total_frames) as pbar:
+	while True:
+		ret, frame = cap.read()
+		if not ret:
+			break
+
+		# ===== 推論 =====
+		output_frame = core(compiled_model, frame)
+		# =================
+
+		out.write(output_frame)
+
+		pbar.update(1)
+
+cap.release()
+out.release()
