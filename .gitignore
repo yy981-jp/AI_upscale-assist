@@ -2,10 +2,6 @@
 *.o
 *.exe
 
-/input/
-/output/
-/outputFrames/
-/progress/
 *.mp4
 *.jpg
 *.png
