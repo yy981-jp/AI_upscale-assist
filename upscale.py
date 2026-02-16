@@ -4,22 +4,19 @@ import cv2
 from tqdm import tqdm
 
 
-def infer_single(infer_request, frame):
-    # ===== 前処理 =====
-    arr = frame.transpose(2, 0, 1)          # HWC → CHW
-    arr = np.expand_dims(arr, 0)            # [1,C,H,W]
+def preprocess(frame):
+    arr = frame.transpose(2, 0, 1)
+    arr = np.expand_dims(arr, 0)
     arr = np.ascontiguousarray(arr, dtype=np.float32)
     arr *= (1.0 / 255.0)
+    return arr
 
-    # ===== 推論 =====
-    infer_request.infer({0: arr})
-    output = infer_request.get_output_tensor(0).data  # [1,3,H*,W*]
 
-    # ===== 後処理 =====
+def postprocess(output, scale):
     output = np.clip(output, 0, 1)
     output = (output * 255.0).astype(np.uint8)
-    output = output[0].transpose(1, 2, 0)   # CHW → HWC
-
+    output = output[0].transpose(1, 2, 0)
+    output = output[4*scale:-4*scale, :, :]
     return output
 
 
@@ -60,8 +57,6 @@ compiled_model = ie.compile_model(
     }
 )
 
-infer_request = compiled_model.create_infer_request()
-
 
 # ==========================
 # 入力動画
@@ -85,24 +80,49 @@ out = cv2.VideoWriter(output_path, fourcc, fps, (out_width, out_height))
 total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
 
 
+
+num_requests = 3
+free_requests = [compiled_model.create_infer_request() for _ in range(num_requests)]
+busy_requests = []
+
 with tqdm(total=total_frames) as pbar:
     while True:
-        ret, frame = cap.read()
-        if not ret:
-            break
 
-        # 360pへ縮小
-        frame_360p = cv2.resize(frame, (640, 360))
+        # 空いてるrequestがあれば投入
+        if free_requests:
+            ret, frame = cap.read()
+            if ret:
+                req = free_requests.pop()
 
-        # 368へパディング
-        padded = pad_360_to_368(frame_360p)
+                frame_360p = cv2.resize(frame, (640, 360))
+                padded = pad_360_to_368(frame_360p)
+                arr = preprocess(padded)
 
-        # 推論
-        sr = infer_single(infer_request, padded)
+                req.start_async({0: arr})
+                busy_requests.append(req)
+            else:
+                break
 
-        # 出力も368→360相当部分をクロップ
-        sr = sr[4*scale:-4*scale, :, :]  # 上下のパディング分除去
+        # 完了チェック
+        finished = []
+        for req in busy_requests:
+            if req.wait_for(0):  # 完了
+                output = req.get_output_tensor(0).data
+                sr = postprocess(output, scale)
+                out.write(sr)
+                pbar.update(1)
 
+                finished.append(req)
+
+        for req in finished:
+            busy_requests.remove(req)
+            free_requests.append(req)
+
+    # 残りを全部回収
+    for req in busy_requests:
+        req.wait()
+        output = req.get_output_tensor(0).data
+        sr = postprocess(output, scale)
         out.write(sr)
         pbar.update(1)
 
